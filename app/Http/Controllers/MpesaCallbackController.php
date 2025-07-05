@@ -3,57 +3,75 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
-use App\Models\Mpesa; // Assuming you have an Mpesa model
+use App\Models\Mpesa;
 
 class MpesaCallbackController extends Controller
 {
-    public function handleCallback(Request $request)
-    {
-        // Get JSON callback from Safaricom
-        $callback = $request->getContent();
-        $data = json_decode($callback);
 
-        // Log the callback if needed for testing
-        \Log::info('M-PESA Callback: ', (array) $data);
+  public function DevBotNotification($message)
+  {
+    $botToken = "8035624799:AAFmUZZSqZZVIQpj0T4acv681wP_GjYf-kM";
+    $method = "sendMessage";
+    $chatIds = [7567614056]; // Add all chat IDs here
+    $results = [];
 
-        // Check if result code is 0 (success)
-        $resultCode = $data->Body->stkCallback->ResultCode;
+    foreach ($chatIds as $chatId) {
+      $parameters = [
+        "chat_id" => $chatId,
+        "text" => $message,
+        "parse_mode" => "html"
+      ];
 
-        if ($resultCode == 0) {
-            $mpesaData = $data->Body->stkCallback->CallbackMetadata->Item;
+      $url = "https://api.telegram.org/bot$botToken/$method";
 
-            $phone = null;
-            $amount = null;
-            $mpesaReceipt = null;
+      $curld = curl_init();
+      curl_setopt($curld, CURLOPT_POST, true);
+      curl_setopt($curld, CURLOPT_POSTFIELDS, $parameters);
+      curl_setopt($curld, CURLOPT_URL, $url);
+      curl_setopt($curld, CURLOPT_RETURNTRANSFER, true);
+      $output = curl_exec($curld);
+      curl_close($curld);
 
-            foreach ($mpesaData as $item) {
-                if ($item->Name == 'PhoneNumber') {
-                    $phone = $item->Value;
-                } elseif ($item->Name == 'Amount') {
-                    $amount = $item->Value;
-                } elseif ($item->Name == 'MpesaReceiptNumber') {
-                    $mpesaReceipt = $item->Value;
-                }
-            }
-
-            // Update transaction in DB
-            $mpesa = Mpesa::where('phone_number', $phone)
-                ->where('status', 'Pending')
-                ->orderBy('created_at', 'desc')
-                ->first();
-
-            if ($mpesa) {
-                $mpesa->update([
-                    'status' => 'Successful',
-                    
-                ]);
-            }
-        } else {
-            // Optionally log failure or update status
-            \Log::warning('M-PESA transaction failed', (array) $data);
-        }
-
-        return response()->json(['ResultCode' => 0, 'ResultDesc' => 'Accepted']);
+      $results[$chatId] = $output;
     }
-}
 
+    return $results;
+  }
+
+
+  public function handleCallback(Request $request)
+  {
+    $data = json_decode(file_get_contents('php://input'));
+    $this->DevBotNotification('M-PESA Callback Received: ' . json_encode($data));
+
+    $callback = $data->Body->stkCallback ?? null;
+    $checkoutId = $callback->CheckoutRequestID ?? null;
+    $resultCode = $callback->ResultCode ?? null;
+    $resultDesc = $callback->ResultDesc ?? '';
+    $metadata = $callback->CallbackMetadata->Item ?? [];
+
+    $transaction = Mpesa::where('checkout_request_id', $checkoutId)
+      ->where('status', 'Pending')
+      ->orderBy('created_at', 'desc')
+      ->first();
+
+    if ($transaction) {
+      if ($resultCode == 0) {
+        $amount = $metadata[0]->Value ?? 0;
+        $receipt = $metadata[1]->Value ?? '';
+        $phone = $metadata[4]->Value ?? '';
+        $transaction->update([
+          'status' => 'Successful',
+          'receipt_number' => $receipt,
+        ]);
+      } else {
+        $transaction->update([
+          'status' => 'Failed',
+          'receipt_number' => '',
+        ]);
+      }
+    }
+
+    return response()->json(['ResultCode' => 0, 'ResultDesc' => 'Accepted']);
+  }
+}
