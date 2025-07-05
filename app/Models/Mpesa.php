@@ -13,5 +13,7 @@ class Mpesa extends Model
         'reference',
         'description',
         'status',
+        'checkout_request_id',
+        'receipt_number',
     ];
 }
